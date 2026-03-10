@@ -1,0 +1,3 @@
+[submodule "salus"]
+	path = salus
+	url = git@github.com:Virutialization-Free-CVM/salus.git
