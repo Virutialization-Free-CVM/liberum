@@ -34,6 +34,7 @@ const ENTRY_SHIM_MEASUREMENT: [u8; SHA384_DIGEST_BYTES] = [0x11; SHA384_DIGEST_B
 const RUNTIME_CORE_MEASUREMENT: [u8; SHA384_DIGEST_BYTES] = [0x22; SHA384_DIGEST_BYTES];
 const GUEST_IMAGE_MEASUREMENT: [u8; SHA384_DIGEST_BYTES] = [0x33; SHA384_DIGEST_BYTES];
 const EXIT_SHIM_MEASUREMENT: [u8; SHA384_DIGEST_BYTES] = [0x44; SHA384_DIGEST_BYTES];
+const VERIFY_JMP_REJECT_MODE: u64 = 1;
 
 fn fence_memory() {
     cove_host::tsm_initiate_fence().expect("tellus_wasmrt: TsmInitiateFence failed");
@@ -105,7 +106,11 @@ fn print_last_monitor_event(monitor: &LiberumMonitor) {
     }
 }
 
-pub fn run_tellus_wasmrt_host(console_mem: &'static mut [u8], fdt_addr: u64) -> ! {
+pub fn run_tellus_wasmrt_host(
+    console_mem: &'static mut [u8],
+    fdt_addr: u64,
+    demo_mode: u64,
+) -> ! {
     SbiConsole::set_as_console(console_mem);
 
     println!("Tellus WasmRT: boot");
@@ -280,14 +285,34 @@ pub fn run_tellus_wasmrt_host(console_mem: &'static mut [u8], fdt_addr: u64) -> 
             USABLE_RAM_START_ADDRESS,
         )
         .unwrap();
-    monitor
-        .verify_jmp(
-            ENTRY_SHIM_COMPONENT_ID,
-            RUNTIME_CORE_COMPONENT_ID,
-            RUNTIME_CORE_PC,
-            RUNTIME_CORE_MEASUREMENT,
-        )
-        .unwrap();
+    let runtime_target_pc = if demo_mode == VERIFY_JMP_REJECT_MODE {
+        RUNTIME_CORE_PC + 4
+    } else {
+        RUNTIME_CORE_PC
+    };
+    if demo_mode == VERIFY_JMP_REJECT_MODE {
+        println!("Liberum: verify_jmp reject demo enabled (tampered target_pc=0x{runtime_target_pc:x})");
+    }
+    if let Err(err) = monitor.verify_jmp(
+        ENTRY_SHIM_COMPONENT_ID,
+        RUNTIME_CORE_COMPONENT_ID,
+        runtime_target_pc,
+        RUNTIME_CORE_MEASUREMENT,
+    ) {
+        print_last_monitor_event(&monitor);
+        println!("Liberum: rejecting guest entry before confidential run: {:?}", err);
+        cove_host::tvm_destroy(vmid).expect("tellus_wasmrt: TvmDestroy failed");
+        reclaim_pages(
+            guest_pages_base,
+            NUM_WASMRT_GUEST_IMAGE_PAGES + NUM_WASMRT_GUEST_ZERO_PAGES,
+        );
+        reclaim_pages(state_pages_base, tvm_create_pages);
+        reclaim_pages(vcpu_pages_base, tsm_info.tvm_vcpu_state_pages);
+        nacl::unregister_shmem().expect("tellus_wasmrt: unregister_shmem failed");
+        println!("Tellus WasmRT: reject path complete");
+        reset::shutdown().expect("tellus_wasmrt: shutdown failed");
+        abort()
+    }
     print_last_monitor_event(&monitor);
     let mut exec_ctx = monitor.begin_confidential_run(RUNTIME_CORE_COMPONENT_ID).unwrap();
     print_last_monitor_event(&monitor);

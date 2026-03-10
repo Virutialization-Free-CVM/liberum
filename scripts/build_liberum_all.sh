@@ -15,3 +15,4 @@ fi
 
 cd "${SALUS_DIR}"
 bazelisk build //:liberum-all
+bazelisk build //test-workloads:tellus_wasmrt_reject_raw
