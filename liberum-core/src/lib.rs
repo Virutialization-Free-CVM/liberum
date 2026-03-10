@@ -12,6 +12,11 @@ pub const MAX_COMPONENTS: usize = 8;
 pub const MAX_TRANSITIONS: usize = 8;
 pub const MAX_LOG_EVENTS: usize = 32;
 
+// Liberum manages measured sandbox components instead of VM/vCPU objects.
+// This crate holds the minimal component model and policy checks used by the
+// current PoC.
+
+// Minimal component roles used in the first Wasm-centric demo path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComponentType {
     RuntimeCore,
@@ -20,6 +25,7 @@ pub enum ComponentType {
     ExitShim,
 }
 
+// Small lifecycle for deadline-one: create, load, finalize, run, exit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ComponentState {
     Created,
@@ -60,6 +66,7 @@ pub enum LiberumError {
 
 pub type Result<T> = core::result::Result<T, LiberumError>;
 
+// Frozen metadata that verify_jmp and trusted-exit policy consult.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentDescriptor {
     pub component_id: u64,
@@ -78,6 +85,7 @@ impl ComponentDescriptor {
     }
 }
 
+// Allowed edge in the component transition graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthorizedTransition {
     pub from_component_id: u64,
@@ -85,6 +93,7 @@ pub struct AuthorizedTransition {
     pub target_pc: u64,
 }
 
+// Minimal execution context tracked while a confidential component is active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfidentialExecutionContext {
     pub active_component_id: u64,
@@ -93,6 +102,7 @@ pub struct ConfidentialExecutionContext {
     pub last_exit_reason: Option<ForcedExitReason>,
 }
 
+// Demo-visible events used to show the policy path in logs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemoLogEvent {
     ComponentCreated(u64, ComponentType),
@@ -113,6 +123,8 @@ struct ManagedComponent {
     bytes_loaded: usize,
 }
 
+// In-memory monitor for the current PoC. It owns component metadata, the
+// authorized transition graph, and a small log of observable policy events.
 pub struct LiberumMonitor {
     components: ArrayVec<ManagedComponent, MAX_COMPONENTS>,
     transitions: ArrayVec<AuthorizedTransition, MAX_TRANSITIONS>,
@@ -132,6 +144,7 @@ impl LiberumMonitor {
         }
     }
 
+    // Registers a component descriptor before any code bytes are staged.
     pub fn create_component(&mut self, descriptor: ComponentDescriptor) -> Result<()> {
         if self
             .components
@@ -153,6 +166,7 @@ impl LiberumMonitor {
             .map_err(|_| LiberumError::CapacityExceeded)
     }
 
+    // Marks a component as loaded once its backing image has been staged.
     pub fn load_component(&mut self, component_id: u64, bytes_loaded: usize) -> Result<()> {
         let component = self.component_mut(component_id)?;
         component.state = ComponentState::Loaded;
@@ -160,6 +174,8 @@ impl LiberumMonitor {
         self.push_log(DemoLogEvent::ComponentLoaded(component_id))
     }
 
+    // Freezes a component descriptor and pins the measurement used for later
+    // entry verification.
     pub fn finalize_component(
         &mut self,
         component_id: u64,
@@ -193,6 +209,7 @@ impl LiberumMonitor {
         self.push_log(DemoLogEvent::ExitShimRegistered(component_id))
     }
 
+    // Adds one allowed edge to the component transition graph.
     pub fn authorize_transition(
         &mut self,
         from_component_id: u64,
@@ -213,6 +230,7 @@ impl LiberumMonitor {
             .map_err(|_| LiberumError::CapacityExceeded)
     }
 
+    // Checks both graph authorization and descriptor-local entry policy.
     pub fn verify_jmp(
         &mut self,
         from_component_id: u64,
@@ -231,6 +249,8 @@ impl LiberumMonitor {
         self.verify_entry(to_component_id, target_pc, measurement)
     }
 
+    // Enforces the minimum verify_jmp semantics for the current PoC:
+    // finalized component, exact entry PC, in-range target, and matching digest.
     pub fn verify_entry(
         &mut self,
         to_component_id: u64,
@@ -260,6 +280,7 @@ impl LiberumMonitor {
         }
     }
 
+    // Starts a confidential execution window once verify_jmp has succeeded.
     pub fn begin_confidential_run(
         &mut self,
         component_id: u64,
@@ -281,6 +302,8 @@ impl LiberumMonitor {
         })
     }
 
+    // Converts an in-flight event into a trusted exit through the registered
+    // exit shim rather than returning directly to the host path.
     pub fn force_trusted_exit(
         &mut self,
         ctx: &mut ConfidentialExecutionContext,
